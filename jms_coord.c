@@ -161,29 +161,47 @@ int main(int argc, char *argv[]){
         else if(bytes > 0){
             command[bytes] = '\0'; // null-terminate the command string
         }
+        else{ // EOF reached, restart connection
+            close(fd_in);
+            fd_in = open(fifopath_in, O_RDONLY); // reopen fifo to avoid blocking
+            if(fd_in < 0){
+                perror("Error reopening fifo for reading");
+                exit(1);
+            }
+            continue;
+        }
 
         // process command
         switch(encode(command)){
             case SUBMIT:
+                write(fd_out, "Coord says: SUBMIT received!", 28);
                 break;
             case STATUS:
+                write(fd_out, "Coord says: STATUS received!", 28);
                 break;
             case STATUS_ALL:
+                write(fd_out, "Coord says: STATUS_ALL received!", 32);
                 break;
             case SHOW_ACTIVE:
+                write(fd_out, "Coord says: SHOW_ACTIVE received!", 34);
                 break;
             case SHOW_POOLS:
+                write(fd_out, "Coord says: SHOW_POOLS received!", 33);
                 break;
             case SHOW_FINISHED:
+                write(fd_out, "Coord says: SHOW_FINISHED received!", 35);
                 break;
             case SUSPEND:
+                write(fd_out, "Coord says: SUSPEND received!", 29);
                 break;
             case RESUME:
+                write(fd_out, "Coord says: RESUME received!", 29);
                 break;
             case SHUTDOWN:
+                write(fd_out, "Coord says: SHUTDOWN received!", 30);
                 break;
             case -1:
-                printf("Invalid command\n");
+                write(fd_out, "Coord says: Invalid command!", 28);
                 break;
         } 
     }

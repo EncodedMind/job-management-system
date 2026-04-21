@@ -1,1 +1,7 @@
-*.o
+*
+
+!jms_console.c
+!jms_coord.c
+!jms_script.sh
+!Makefile
+!README.md
