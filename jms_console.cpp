@@ -10,20 +10,22 @@ operations_file: Contains commands to be executed by jms_coord and the tree of j
 If EOF or there is no -o <file> argument, it reads commands from the terminal (stdin)
 */
 
-#include <stdio.h>
+#include <iostream>
+#include <string>
 #include <unistd.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
 
+using namespace std;
+
 int main(int argc, char *argv[]){
 
-    char* w_arg = NULL;
-    char* r_arg = NULL;
-    char* o_arg = NULL;
+    string w_arg = "";
+    string r_arg = "";
+    string o_arg = "";
 
     int opt;
     while((opt = getopt(argc, argv, "w:r:o:")) != -1){
@@ -38,23 +40,23 @@ int main(int argc, char *argv[]){
                 o_arg = optarg;
                 break;
             default:
-                printf("Usage: jms_console -w <jms_in> -r <jms_out> [-o <operations_file>]\n");
+                cout << "Usage: jms_console -w <jms_in> -r <jms_out> [-o <operations_file>]\n";
                 exit(1);
         }
     }
 
-    if(w_arg == NULL || r_arg == NULL){
-        printf("Usage: jms_console -w <jms_in> -r <jms_out> [-o <operations_file>]\n");
+    if(w_arg.empty() || r_arg.empty()){
+        cout << "Usage: jms_console -w <jms_in> -r <jms_out> [-o <operations_file>]\n";
         exit(1);
     }
 
-    char* path_out = w_arg;
-    char* path_in = r_arg;
+    string path_out = w_arg;
+    string path_in = r_arg;
     int fd_commands;
 
-    if(o_arg != NULL){
-        if((fd_commands = open(o_arg, O_RDONLY)) < 0){
-            perror("Error opening operations file");
+    if(!o_arg.empty()){
+        if((fd_commands = open(o_arg.c_str(), O_RDONLY)) < 0){
+            cerr << "Error opening operations file" << endl;
             exit(1);
         }
     }
@@ -64,31 +66,31 @@ int main(int argc, char *argv[]){
 
     // open named-pipes for reading and writing
     int fd_out;
-    if((fd_out = open(path_out, O_WRONLY)) < 0){
-        perror("Error opening fifo for writing");
+    if((fd_out = open(path_out.c_str(), O_WRONLY)) < 0){
+        cerr << "Error opening fifo for writing" << endl;
         exit(1);
     }
 
     int fd_in;
-    if((fd_in = open(path_in, O_RDONLY)) < 0){
-        perror("Error opening fifo for reading");
+    if((fd_in = open(path_in.c_str(), O_RDONLY)) < 0){
+        cerr << "Error opening fifo for reading" << endl;
         exit(1);
     }
 
     // Read commands from fd_commands and send them to jms_coord through the named-pipe fd_out
     // Read responses from jms_coord through the named-pipe fd_in and print them
 
-    char command[256];
-    char response[256];
+    string command;
+    string response;
     char c;
-    int chars_read = 0;
 
     while(1){
+        response.resize(256, '\0');
 
         int bytes = read(fd_commands, &c, 1);
 
         if(bytes < 0){
-            perror("Error reading from fifo");
+            cerr << "Error reading from fifo" << endl;
             exit(1);
         }
         else if(bytes == 0){
@@ -101,34 +103,32 @@ int main(int argc, char *argv[]){
         }
         
         if(c != '\n'){
-            if(chars_read < sizeof(command)-1){
-                command[chars_read++] = c;
-            }
+            command += c;
             continue;
         }
         else{
-            command[chars_read] = '\0';
-            chars_read = 0;
-            if(strlen(command) == 0) continue;
+            if(command.empty()) continue;
         }
 
-        if(write(fd_out, command, strlen(command)) < 0){
-            perror("Error writing to fifo");
+        if(write(fd_out, command.c_str(), command.length()) < 0){
+            cerr << "Error writing to fifo" << endl;
             exit(1);
         }
 
-        bytes = read(fd_in, response, sizeof(response)-1);
+        bytes = read(fd_in, &response[0], response.size()-1);
         if(bytes < 0){
-            perror("Error reading from fifo");
+            cerr << "Error reading from fifo" << endl;
             exit(1);
         }
         else if(bytes > 0){
-            response[bytes] = '\0'; // null-terminate the response string
-            printf("%s\n", response);
+            response.resize(bytes);
+            cout << response << endl;
         }
+
+        command.clear();
     }
 
-    if(o_arg != NULL) close(fd_commands);
+    if(!o_arg.empty()) close(fd_commands);
     close(fd_in);
     close(fd_out);
 
