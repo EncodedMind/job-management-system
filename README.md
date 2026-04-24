@@ -84,15 +84,6 @@ JobID: <id>, PID: <pid>
 ```
 
 - Command tokenization is whitespace-based inside the pool (`istringstream` parsing).
-- Shell features are not interpreted unless you explicitly invoke a shell.
-	- `submit ls | wc -l` does not create a pipeline.
-	- `submit echo hi > out.txt` does not apply redirection.
-	- If shell behavior is required, use a shell command explicitly, for example:
-
-```text
-submit sh -c "ls | wc -l"
-```
-
 - `submit` must include an executable command. Submitting only `submit` (without payload) is invalid usage.
 
 ### `status <jobid>`
@@ -125,7 +116,7 @@ Send `SIGCONT` to a suspended job and mark it as `Active`.
 The system tracks suspended intervals and computes active runtime as:
 
 $$
-	ext{active runtime} = \text{now} - \text{start time} - \text{total suspended time}
+\text{active runtime} = \text{now} - \text{start time} - \text{total suspended time}
 $$
 
 ### `shutdown`
