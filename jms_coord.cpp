@@ -30,6 +30,8 @@ struct Job{
     pid_t pid;
     string status; // Active, Finished, Suspended
     time_t start_time;
+    time_t suspend_time;
+    int total_suspended_seconds;
 };
 
 typedef enum{
@@ -467,6 +469,7 @@ int main(int argc, char *argv[]){
                 new_job.pid = job_pid;
                 new_job.status = "Active";
                 new_job.start_time = time(nullptr);
+                new_job.total_suspended_seconds = 0;
                 jobs[current_job_id] = new_job;
 
                 // Write JobID and its PID to jms_out
@@ -500,7 +503,7 @@ int main(int argc, char *argv[]){
                 
                 // If active, add for how many seconds it has been running
                 if(target_job.status == "Active"){
-                    int seconds = difftime(time(nullptr), target_job.start_time);
+                    int seconds = difftime(time(nullptr), target_job.start_time) - target_job.total_suspended_seconds;
                     status_message += " (running for " + to_string(seconds) + " seconds)";
                 }
                 status_message += "\n";
@@ -546,7 +549,7 @@ int main(int argc, char *argv[]){
                     if(print_job){
                         statusall += "JobID: " + to_string(pair.first) + " Status: " + pair.second.status;
                         if(pair.second.status == "Active"){
-                            int seconds = difftime(time(nullptr), pair.second.start_time);
+                            int seconds = difftime(time(nullptr), pair.second.start_time) - pair.second.total_suspended_seconds;
                             statusall += " (running for " + to_string(seconds) + " seconds)";
                         }
                         statusall += "\n";
@@ -645,6 +648,7 @@ int main(int argc, char *argv[]){
 
                 // Update job's status in jobs map to "Suspended"
                 jobs[job_id].status = "Suspended";
+                jobs[job_id].suspend_time = time(nullptr);
 
                 // Sent suspend signal to JobID <JobID>
                 string suspend = "Sent suspend signal to JobID " + to_string(job_id) + "\n";
@@ -681,6 +685,7 @@ int main(int argc, char *argv[]){
 
                 // Update job's status in jobs map to "Active"
                 jobs[job_id].status = "Active";
+                jobs[job_id].total_suspended_seconds += difftime(time(nullptr), jobs[job_id].suspend_time);
 
                 // Sent resume signal to JobID <JobID>
                 string resume = "Sent resume signal to JobID " + to_string(job_id) + "\n";
