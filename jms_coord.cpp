@@ -18,7 +18,7 @@ Commands:
 8) resume <JobID>
 9) shutdown
 
-Each job creates a directory as soon as it starts where is saves the results of its execution:
+Each job creates a directory as soon as it starts where it saves the results of its execution:
 outputs_jobid_pid_date_time (outputs_3_1234_20260421_173000)
 files in dir: stdout_jobid (the output of the job to stdout) and stderr_jobid (the output to stderr)
 
@@ -34,14 +34,27 @@ For the second case, if write end opens without having opened read end, error is
 
 #include <iostream>
 #include <string>
+#include <sstream>
+#include <vector>
+#include <algorithm>
+#include <ctime>
+
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
 
 using namespace std;
+
+struct Pool{
+    pid_t pid;
+    int active_jobs;
+    int fd_coord_in; // where the pool writes to (coord reads from)
+    int fd_coord_out; // where the pool reads from (coord writes to)
+};
 
 typedef enum{
     SUBMIT,
@@ -154,8 +167,28 @@ int main(int argc, char *argv[]){
 
     // enter main loop to read commands from jms_in and process them accordingly
 
+    vector<Pool> pools;
+    int total_pools = 0;
+    int next_job_id = 1;
+
     string command;
     while(1){
+
+        // zombie cleanup for pools (update vector accordingly)
+        int pool_status;
+        pid_t finished_pool_pid;
+        while((finished_pool_pid = waitpid(-1, &pool_status, WNOHANG)) > 0){
+            // a pool process has finished
+            for(auto it = pools.begin(); it != pools.end(); ++it){
+                if(it->pid == finished_pool_pid){
+                    close(it->fd_coord_in);
+                    close(it->fd_coord_out);
+                    pools.erase(it);
+                    break;
+                }
+            }
+        }
+
         command.resize(256, '\0');
 
         // read command from jms_in
@@ -179,9 +212,225 @@ int main(int argc, char *argv[]){
 
         // process command
         switch(encode(command)){
-            case SUBMIT:
-                write(fd_out, "Coord says: SUBMIT received!", 28);
+            case SUBMIT: {
+                command.erase(0, 7);
+
+                // Check capacity of current pools
+                Pool* selected_pool = nullptr;
+
+                for(Pool& pool : pools){
+                    if(pool.active_jobs < jobs_pool){
+                        selected_pool = &pool;
+                        break;
+                    }
+                }
+
+                // Create new pool if necessary
+                if(selected_pool == nullptr){
+                    total_pools++;
+
+                    // Create a new named pipe for communication with new pool
+                    string pool_fifo_in = path + "/pool_" + to_string(total_pools) + "_in";
+                    string pool_fifo_out = path + "/pool_" + to_string(total_pools) + "_out";
+
+                    // delete if they exist
+                    unlink(pool_fifo_in.c_str());
+                    unlink(pool_fifo_out.c_str());
+
+                    // coord will read from:
+                    if(mkfifo(pool_fifo_in.c_str(), 0666) == -1){
+                        cerr << "Error creating fifo" << endl;
+                        exit(1);
+                    }
+
+                    // coord will write to:
+                    if(mkfifo(pool_fifo_out.c_str(), 0666) == -1){
+                        cerr << "Error creating fifo" << endl;
+                        exit(1);
+                    }
+
+                    pid_t pool_pid = fork();
+                    if(pool_pid == -1){
+                        cerr << "Failed to fork" << endl;
+                        exit(1);
+                    }
+                    
+                    if(pool_pid == 0){ // Child process (pool)
+
+                        int pool_fd_in, pool_fd_out;
+
+                        if((pool_fd_out = open(pool_fifo_in.c_str(), O_WRONLY)) < 0){
+                            cerr << "Error opening fifo for writing" << endl;
+                            exit(1);
+                        }
+                        if((pool_fd_in = open(pool_fifo_out.c_str(), O_RDONLY)) < 0){
+                            cerr << "Error opening fifo for reading" << endl;
+                            exit(1);
+                        }
+                        
+                        int finished_jobs = 0;
+                        int received_jobs = 0;
+                        string pool_message;
+                        while(1){
+
+                            if(received_jobs >= jobs_pool){
+                                // Pool has received max numbers of jobs, so reading should be stopped
+                                pid_t finished_pid = wait(NULL); // wait for any child process (job) to finish
+                                if(finished_pid < 0){
+                                    cerr << "Error waiting for child process" << endl;
+                                    exit(1);
+                                }
+                                else if(finished_pid > 0){
+                                    finished_jobs++;
+                                }
+                                if(finished_jobs >= jobs_pool){
+                                    // Pool has finished max numbers of jobs, so it exits
+                                    close(pool_fd_in);
+                                    close(pool_fd_out);
+                                    unlink(pool_fifo_in.c_str());
+                                    unlink(pool_fifo_out.c_str());
+                                    exit(0);
+                                }
+                                continue;
+                            }
+
+                            // clean up zombie processes
+                            pid_t finished_pid;
+                            while((finished_pid = waitpid(-1, NULL, WNOHANG)) > 0){
+                                // a child process has finished
+                                finished_jobs++;
+                            }
+
+                            if(finished_jobs >= jobs_pool){
+                                // Pool has finished max numbers of jobs, so it exits
+                                close(pool_fd_in);
+                                close(pool_fd_out);
+                                unlink(pool_fifo_in.c_str());
+                                unlink(pool_fifo_out.c_str());
+                                exit(0);
+                            }
+
+                            pool_message.resize(256, '\0');
+                            // read command from new_pool.fd_in
+                            int pool_bytes = read(pool_fd_in, &pool_message[0], pool_message.size() - 1);
+                            if(pool_bytes < 0){
+                                cerr << "Error reading from fifo" << endl;
+                                exit(1);
+                            }
+                            else if(pool_bytes > 0){
+                                pool_message.resize(pool_bytes);
+                            }
+                            else{
+                                continue;
+                            }
+
+                            auto pos = pool_message.find('|');
+                            string job_id_str = pool_message.substr(0, pos);
+                            string pool_command = pool_message.substr(pos + 1);
+                            int job_id = stoi(job_id_str);
+
+                            istringstream iss(pool_command);
+                            vector<string> arguments;
+                            while(iss){
+                                string arg;
+                                iss >> arg;
+                                if(!arg.empty()){
+                                    arguments.push_back(arg);
+                                }
+                            }
+
+                            int job_pid = fork();
+                            if(job_pid == -1){
+                                cerr << "Failed to fork" << endl;
+                                exit(1);
+                            }
+                            if(job_pid == 0){ // Child process (job)
+                                // Execute command (mkdir, dup2, execve) and send result back to files in directory
+
+                                time_t timestamp = time(nullptr);
+                                struct tm* timeinfo = localtime(&timestamp);
+                                char date_str[9];
+                                char time_str[7];
+                                strftime(date_str, sizeof(date_str), "%Y%m%d", timeinfo);
+                                strftime(time_str, sizeof(time_str), "%H%M%S", timeinfo);
+                                string job_path = path + "/outputs_" + to_string(job_id) + "_" + to_string(getpid()) + "_" + date_str + "_" + time_str;
+                            
+                                if(mkdir(job_path.c_str(), 0777) == -1){
+                                    cerr << "Error creating directory" << endl;
+                                    exit(1);
+                                }
+
+                                string filedout_path = job_path + "/stdout_" + to_string(job_id);
+                                string filederr_path = job_path + "/stderr_" + to_string(job_id);
+
+                                int filedout;
+                                if((filedout = open(filedout_path.c_str(), O_WRONLY | O_CREAT, 0666)) < 0){
+                                    cerr << "Error opening fifo for reading" << endl;
+                                    exit(1);
+                                }
+
+                                int filederr;
+                                if((filederr = open(filederr_path.c_str(), O_WRONLY | O_CREAT, 0666)) < 0){
+                                    cerr << "Error opening fifo for writing" << endl;
+                                    exit(1);
+                                }
+
+                                dup2(filedout, STDOUT_FILENO);
+                                dup2(filederr, STDERR_FILENO);
+
+                                char* args[arguments.size() + 1];
+                                for(size_t i = 0; i < arguments.size(); i++){
+                                    args[i] = const_cast<char*>(arguments[i].c_str());
+                                }
+                                args[arguments.size()] = nullptr;
+                                execvp(args[0], args);
+
+                                // if execl returns, it means there was an error
+                                cerr << "Error executing command" << endl;
+                                exit(1);
+                            }
+
+                            // Return the job's pid
+                            write(pool_fd_out, &job_pid, sizeof(job_pid));
+                            received_jobs++;
+                        }
+
+                    }
+                    else{ // Parent process (jms_coord)
+                        Pool new_pool;
+                        new_pool.pid = pool_pid;
+                        new_pool.active_jobs = 0;
+                        if((new_pool.fd_coord_in = open(pool_fifo_in.c_str(), O_RDONLY)) < 0){
+                            cerr << "Error opening fifo for reading" << endl;
+                            exit(1);
+                        }
+                        if((new_pool.fd_coord_out = open(pool_fifo_out.c_str(), O_WRONLY)) < 0){
+                            cerr << "Error opening fifo for writing" << endl;
+                            exit(1);
+                        }
+
+                        pools.push_back(new_pool);
+                        selected_pool = &pools.back();
+                    }                    
+                }
+
+                int current_job_id = next_job_id++;
+                selected_pool->active_jobs++;
+                
+                string msg = to_string(current_job_id) + "|" + command; // send all the necessary data at once, separated with a '|'
+
+                // Send job to selected pool through selected_pool.fd_out
+                write(selected_pool->fd_coord_out, msg.c_str(), msg.size()+1);
+                // Read the job's pid from pool through selected_pool.fd_coord_in
+                pid_t job_pid;
+                read(selected_pool->fd_coord_in, &job_pid, sizeof(job_pid));
+
+                // Write JobID and its PID to jms_out
+                string message = "JobID: " + to_string(current_job_id) + ", PID: " + to_string(job_pid) + "\n";
+                write(fd_out, message.c_str(), message.size());
                 break;
+            }
+
             case STATUS:
                 write(fd_out, "Coord says: STATUS received!", 28);
                 break;
