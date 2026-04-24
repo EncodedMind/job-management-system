@@ -508,7 +508,52 @@ int main(int argc, char *argv[]){
             }
 
             case STATUS_ALL: {
-                write(fd_out, "Coord says: STATUS_ALL received!", 32);
+
+                int n = -1;
+
+                // Argument check
+                if(command.size() > 11){
+                    command.erase(0, 11);
+                    if(command.empty()){
+                        write(fd_out, "Error: Invalid argument. \n", 27);
+                        break;
+                    }
+                    else{
+                        n = stoi(command);
+                    }
+                }
+
+                // If no n provided, print status of all jobs
+                // If n is provided, print status for jobs submitted in last n seconds
+
+                string statusall = "";
+                for(const auto& pair : jobs){
+                    bool print_job = false;
+
+                    if(n == -1){
+                        print_job = true;
+                    }
+                    else{
+                        if(difftime(time(nullptr), pair.second.start_time) <= n){
+                            print_job = true;
+                        }
+                    }
+
+                    if(print_job){
+                        statusall += "JobID: " + to_string(pair.first) + " Status: " + pair.second.status;
+                        if(pair.second.status == "Active"){
+                            int seconds = difftime(time(nullptr), pair.second.start_time);
+                            statusall += " (running for " + to_string(seconds) + " seconds)";
+                        }
+                        statusall += "\n";
+                    }
+                }
+
+                if(statusall.empty()){
+                    statusall = "No jobs found.\n";
+                }
+
+                write(fd_out, statusall.c_str(), statusall.size());
                 break;
             }
 
