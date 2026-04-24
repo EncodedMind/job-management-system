@@ -514,7 +514,22 @@ int main(int argc, char *argv[]){
             }
 
             case SHOW_ACTIVE: {
-                write(fd_out, "Coord says: SHOW_ACTIVE received!", 34);
+                
+                // Argument check
+                if(command.size() > 11){
+                    write(fd_out, "Error: SHOW_ACTIVE does not take any arguments. \n", 49);
+                    break;
+                }
+
+                string showactive = "Active jobs:\n";
+
+                for(const auto& pair : jobs){
+                    if(pair.second.status == "Active"){
+                        showactive += "JobID " + to_string(pair.first) + "\n";
+                    }
+                }
+
+                write(fd_out, showactive.c_str(), showactive.size());
                 break;
             }
 
