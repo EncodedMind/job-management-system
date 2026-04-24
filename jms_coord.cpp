@@ -309,7 +309,7 @@ int main(int argc, char *argv[]){
                                     }
                                     killed++;
                                 }
-                                cout << "Pool " << getpid() << " killed " << killed << " job(s)." << endl;
+                                // cout << "Pool " << getpid() << " killed " << killed << " job(s)." << endl;
 
                                 close(pool_fd_in);
                                 close(pool_fd_out);
