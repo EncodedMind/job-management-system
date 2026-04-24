@@ -1,37 +1,3 @@
-/*
-Creates hierarchy of jobs and checks which are active and which have been terminated
-Does not execute jobs immediately
-Creates pools. Each pool is a forked process from jms_coord. Communication through named pipes
-Each pool can handle a max amount of jobs
-If a pool has handled max jobs, sends the collected data to jms_coord process and gets removed from the tree hierarchy
-
-Input from jms_in (commands), output to jms_out
-
-Commands:
-1) submit <job>
-2) status <JobID>
-3) status-all [n]
-4) show-active
-5) show-pools
-6) show-finished
-7) suspend <JobID>
-8) resume <JobID>
-9) shutdown
-
-Each job creates a directory as soon as it starts where it saves the results of its execution:
-outputs_jobid_pid_date_time (outputs_3_1234_20260421_173000)
-files in dir: stdout_jobid (the output of the job to stdout) and stderr_jobid (the output to stderr)
-
-./jms_coord -l <path> -n <jobs_pool>
-path: Directory where files and directories will be produced during the execution of the programs
-jobs_pool: Max number of jobs each pool can handle
-
-Clear output files and pipes at start
-jms_coord must check if named pipes already exist and if they do, they must be deleted
-named pipes: One process blocked (until other end opens pipe) OR open(O_NONBLOCK - and read only)
-For the second case, if write end opens without having opened read end, error is returned
-*/
-
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -47,6 +13,7 @@ For the second case, if write end opens without having opened read end, error is
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 
 using namespace std;
 
@@ -61,6 +28,7 @@ struct Job{
     int id;
     pid_t pid;
     string status; // Active, Finished, Suspended
+    time_t start_time;
 };
 
 typedef enum{
@@ -75,6 +43,11 @@ typedef enum{
     SHUTDOWN,
     INVALID
 } Command;
+
+void sigchld_handler(int signum){
+    // Just to interrupt the blocking read in jms_coord when a pool process finishes,
+    // so that it can clean up zombie processes and update job statuses accordingly
+}
 
 Command encode(const string& command){
 
@@ -197,6 +170,28 @@ int main(int argc, char *argv[]){
             }
         }
 
+        // check all pools for finished jobs (update jobs map accordingly)
+        for(Pool& pool : pools){
+            char buffer[256];
+            int bytes_read = read(pool.fd_coord_in, buffer, sizeof(buffer) - 1);
+            
+            if(bytes_read > 0){
+                buffer[bytes_read] = '\0';
+                string msg(buffer);
+                
+                // The pool might have sent multiple messages at once, like "FIN|1|FIN|2|"
+                size_t pos = 0;
+                while((pos = msg.find("FIN|", pos)) != string::npos){
+                    size_t end_pos = msg.find("|", pos + 4);
+                    int finished_id = stoi(msg.substr(pos + 4, end_pos - (pos + 4)));
+                    
+                    jobs[finished_id].status = "Finished";
+                    
+                    pos = end_pos + 1;
+                }
+            }
+        }
+
         command.resize(256, '\0');
 
         // read command from jms_in
@@ -265,6 +260,16 @@ int main(int argc, char *argv[]){
                     
                     if(pool_pid == 0){ // Child process (pool)
 
+                        struct sigaction sa;
+                        sa.sa_handler = sigchld_handler;
+                        sigemptyset(&sa.sa_mask);
+                        sa.sa_flags = 0;
+                        if(sigaction(SIGCHLD, &sa, NULL) == -1){
+                            cerr << "Error setting up signal handler" << endl;
+                        }
+
+                        unordered_map<pid_t, int> job_pid_to_id; // map job pid to job id for status updates
+
                         int pool_fd_in, pool_fd_out;
 
                         if((pool_fd_out = open(pool_fifo_in.c_str(), O_WRONLY)) < 0){
@@ -285,11 +290,22 @@ int main(int argc, char *argv[]){
                                 // Pool has received max numbers of jobs, so reading should be stopped
                                 pid_t finished_pid = wait(NULL); // wait for any child process (job) to finish
                                 if(finished_pid < 0){
+                                    if(errno == ECHILD){
+                                        close(pool_fd_in);
+                                        close(pool_fd_out);
+                                        unlink(pool_fifo_in.c_str());
+                                        unlink(pool_fifo_out.c_str());
+                                        exit(0); // no child processes, exit the pool
+                                    }
                                     cerr << "Error waiting for child process" << endl;
                                     exit(1);
                                 }
                                 else if(finished_pid > 0){
                                     finished_jobs++;
+
+                                    int finished_job_id = job_pid_to_id[finished_pid];
+                                    string finish_job_msg = "FIN|" + to_string(finished_job_id) + "|";
+                                    write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size()+1);
                                 }
                                 if(finished_jobs >= jobs_pool){
                                     // Pool has finished max numbers of jobs, so it exits
@@ -307,6 +323,10 @@ int main(int argc, char *argv[]){
                             while((finished_pid = waitpid(-1, NULL, WNOHANG)) > 0){
                                 // a child process has finished
                                 finished_jobs++;
+
+                                int finished_job_id = job_pid_to_id[finished_pid];
+                                string finish_job_msg = "FIN|" + to_string(finished_job_id) + "|";
+                                write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size()+1); // coord will read this to know how to update a job's status to "Finished"
                             }
 
                             if(finished_jobs >= jobs_pool){
@@ -322,6 +342,9 @@ int main(int argc, char *argv[]){
                             // read command from new_pool.fd_in
                             int pool_bytes = read(pool_fd_in, &pool_message[0], pool_message.size() - 1);
                             if(pool_bytes < 0){
+                                if(errno == EINTR){
+                                    continue; // interrupted by signal, continue to check for finished child processes
+                                }
                                 cerr << "Error reading from fifo" << endl;
                                 exit(1);
                             }
@@ -400,6 +423,7 @@ int main(int argc, char *argv[]){
 
                             // Return the job's pid
                             write(pool_fd_out, &job_pid, sizeof(job_pid));
+                            job_pid_to_id[job_pid] = job_id;
                             received_jobs++;
                         }
 
@@ -419,6 +443,7 @@ int main(int argc, char *argv[]){
 
                         pools.push_back(new_pool);
                         selected_pool = &pools.back();
+                        fcntl(selected_pool->fd_coord_in, F_SETFL, O_NONBLOCK); // set non-blocking read for pool's fd_coord_in to read terminated jobs
                     }                    
                 }
 
@@ -432,6 +457,14 @@ int main(int argc, char *argv[]){
                 // Read the job's pid from pool through selected_pool.fd_coord_in
                 pid_t job_pid;
                 read(selected_pool->fd_coord_in, &job_pid, sizeof(job_pid));
+
+                // Populate jobs map with new job's information
+                Job new_job;
+                new_job.id = current_job_id;
+                new_job.pid = job_pid;
+                new_job.status = "Active";
+                new_job.start_time = time(nullptr);
+                jobs[current_job_id] = new_job;
 
                 // Write JobID and its PID to jms_out
                 string message = "JobID: " + to_string(current_job_id) + ", PID: " + to_string(job_pid) + "\n";
@@ -460,14 +493,14 @@ int main(int argc, char *argv[]){
                 Job target_job = jobs[job_id];
 
                 // JobID <JobID> Status: <status>
-                string status_message = "JobID: " + to_string(job_id) + ", Status: " + target_job.status;
+                string status_message = "JobID: " + to_string(job_id) + " Status: " + target_job.status;
                 
                 // If active, add for how many seconds it has been running
                 if(target_job.status == "Active"){
                     int seconds = difftime(time(nullptr), target_job.start_time);
                     status_message += " (running for " + to_string(seconds) + " seconds)";
                 }
-                string status_message += "\n";
+                status_message += "\n";
 
                 // write to fd_out
                 write(fd_out, status_message.c_str(), status_message.size());
