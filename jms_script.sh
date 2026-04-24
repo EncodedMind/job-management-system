@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# ./jms_script.sh -l <path> -c <command> 
-# path: The path with the files and directories produced
-# command: list, size [n], purge
-# list: List of directories the jobs created
-# size [n]: List of directories sorted in increasing order of file size (all they contain)
-# n is not mandatory. If there is n, we output only the n largest values
-# purge: Deletes all the produced directories
-
-# check arguments (make sure command is one of the three)
-
 if [ "$#" -ne 4 ] && [ "$#" -ne 5 ]
 then
     echo "Usage: ./jms_script.sh -l <path> -c <command>"
