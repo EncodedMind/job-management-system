@@ -38,6 +38,7 @@ For the second case, if write end opens without having opened read end, error is
 #include <vector>
 #include <algorithm>
 #include <ctime>
+#include <unordered_map>
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -54,6 +55,12 @@ struct Pool{
     int active_jobs;
     int fd_coord_in; // where the pool writes to (coord reads from)
     int fd_coord_out; // where the pool reads from (coord writes to)
+};
+
+struct Job{
+    int id;
+    pid_t pid;
+    string status; // Active, Finished, Suspended
 };
 
 typedef enum{
@@ -168,6 +175,7 @@ int main(int argc, char *argv[]){
     // enter main loop to read commands from jms_in and process them accordingly
 
     vector<Pool> pools;
+    unordered_map<int, Job> jobs;
     int total_pools = 0;
     int next_job_id = 1;
 
@@ -431,33 +439,81 @@ int main(int argc, char *argv[]){
                 break;
             }
 
-            case STATUS:
-                write(fd_out, "Coord says: STATUS received!", 28);
+            case STATUS: {
+                
+                // Argument check
+                command.erase(0, 7);
+                if(command.empty()){
+                    write(fd_out, "Error: Please provide a JobID. \n", 32);
+                    break;
+                }
+
+                // Get JobID from command
+                int job_id = stoi(command);
+                
+                // Get status of the job (active, finished, suspended)
+                if(jobs.find(job_id) == jobs.end()){
+                    write(fd_out, "Error: JobID not found. \n", 26);
+                    break;
+                }
+                
+                Job target_job = jobs[job_id];
+
+                // JobID <JobID> Status: <status>
+                string status_message = "JobID: " + to_string(job_id) + ", Status: " + target_job.status;
+                
+                // If active, add for how many seconds it has been running
+                if(target_job.status == "Active"){
+                    int seconds = difftime(time(nullptr), target_job.start_time);
+                    status_message += " (running for " + to_string(seconds) + " seconds)";
+                }
+                string status_message += "\n";
+
+                // write to fd_out
+                write(fd_out, status_message.c_str(), status_message.size());
+
                 break;
-            case STATUS_ALL:
+            }
+
+            case STATUS_ALL: {
                 write(fd_out, "Coord says: STATUS_ALL received!", 32);
                 break;
-            case SHOW_ACTIVE:
+            }
+
+            case SHOW_ACTIVE: {
                 write(fd_out, "Coord says: SHOW_ACTIVE received!", 34);
                 break;
-            case SHOW_POOLS:
+            }
+
+            case SHOW_POOLS: {
                 write(fd_out, "Coord says: SHOW_POOLS received!", 33);
                 break;
-            case SHOW_FINISHED:
+            }
+
+            case SHOW_FINISHED: {
                 write(fd_out, "Coord says: SHOW_FINISHED received!", 35);
                 break;
-            case SUSPEND:
+            }
+
+            case SUSPEND: {
                 write(fd_out, "Coord says: SUSPEND received!", 29);
                 break;
-            case RESUME:
+            }
+
+            case RESUME: {
                 write(fd_out, "Coord says: RESUME received!", 29);
                 break;
-            case SHUTDOWN:
+            }
+
+            case SHUTDOWN: {
                 write(fd_out, "Coord says: SHUTDOWN received!", 30);
                 break;
-            case INVALID:
+            }
+            
+            case INVALID: {
                 write(fd_out, "Coord says: Invalid command!", 28);
                 break;
+            }
         } 
     }
 
