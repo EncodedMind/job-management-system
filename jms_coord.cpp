@@ -654,7 +654,38 @@ int main(int argc, char *argv[]){
             }
 
             case RESUME: {
-                write(fd_out, "Coord says: RESUME received!", 29);
+                // Argument check
+                command.erase(0, 7);
+                if(command.empty()){
+                    write(fd_out, "Error: Please provide a JobID. \n", 32);
+                    break;
+                }
+
+                int job_id = stoi(command);
+
+                if(jobs.find(job_id) == jobs.end()){
+                    write(fd_out, "Error: JobID not found. \n", 26);
+                    break;
+                }
+
+                if(jobs[job_id].status != "Suspended"){
+                    write(fd_out, "Error: Only suspended jobs can be resumed. \n", 44);
+                    break;
+                }
+
+                // Send signal to the job's process to resume it (SIGCONT)
+                if(kill(jobs[job_id].pid, SIGCONT) == -1){
+                    write(fd_out, "Error sending signal to job process. \n", 38);
+                    exit(1);
+                }
+
+                // Update job's status in jobs map to "Active"
+                jobs[job_id].status = "Active";
+
+                // Sent resume signal to JobID <JobID>
+                string resume = "Sent resume signal to JobID " + to_string(job_id) + "\n";
+
+                write(fd_out, resume.c_str(), resume.size());
                 break;
             }
 
