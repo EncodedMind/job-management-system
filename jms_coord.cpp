@@ -20,6 +20,7 @@ using namespace std;
 struct Pool{
     pid_t pid;
     int active_jobs;
+    int total_jobs;
     int fd_coord_in; // where the pool writes to (coord reads from)
     int fd_coord_out; // where the pool reads from (coord writes to)
 };
@@ -190,6 +191,7 @@ int main(int argc, char *argv[]){
                     size_t end_pos = msg.find("|", pos + 4);
                     int finished_id = stoi(msg.substr(pos + 4, end_pos - (pos + 4)));
                     jobs[finished_id].status = "Finished";
+                    pool.active_jobs--;
                     pos = end_pos + 1;
                 }
             }
@@ -219,7 +221,7 @@ int main(int argc, char *argv[]){
                 Pool* selected_pool = nullptr;
 
                 for(Pool& pool : pools){
-                    if(pool.active_jobs < jobs_pool){
+                    if(pool.total_jobs < jobs_pool){
                         selected_pool = &pool;
                         break;
                     }
@@ -429,6 +431,7 @@ int main(int argc, char *argv[]){
                         Pool new_pool;
                         new_pool.pid = pool_pid;
                         new_pool.active_jobs = 0;
+                        new_pool.total_jobs = 0;
                         if((new_pool.fd_coord_in = open(pool_fifo_in.c_str(), O_RDONLY)) < 0){
                             cerr << "Error opening fifo for reading" << endl;
                             exit(1);
@@ -446,7 +449,8 @@ int main(int argc, char *argv[]){
 
                 int current_job_id = next_job_id++;
                 selected_pool->active_jobs++;
-                
+                selected_pool->total_jobs++;
+
                 string msg = to_string(current_job_id) + "|" + command; // send all the necessary data at once, separated with a '|'
 
                 // Send job to selected pool through selected_pool.fd_out
@@ -578,7 +582,18 @@ int main(int argc, char *argv[]){
             }
 
             case SHOW_POOLS: {
-                write(fd_out, "Coord says: SHOW_POOLS received!", 33);
+
+                if(command.size() > 10){
+                    write(fd_out, "Error: SHOW_POOLS does not take any arguments. \n", 48);
+                    break;
+                }
+
+                string showpools = "Pool & NumOfJobs:\n";
+                for(const Pool& pool : pools){
+                    showpools += to_string(pool.pid) + " " + to_string(pool.active_jobs) + "\n";
+                }
+
+                write(fd_out, showpools.c_str(), showpools.size());
                 break;
             }
 
