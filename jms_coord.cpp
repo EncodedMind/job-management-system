@@ -154,44 +154,6 @@ int main(int argc, char *argv[]){
 
     string command;
     while(1){
-
-        // zombie cleanup for pools (update vector accordingly)
-        int pool_status;
-        pid_t finished_pool_pid;
-        while((finished_pool_pid = waitpid(-1, &pool_status, WNOHANG)) > 0){
-            // a pool process has finished
-            for(auto it = pools.begin(); it != pools.end(); ++it){
-                if(it->pid == finished_pool_pid){
-                    close(it->fd_coord_in);
-                    close(it->fd_coord_out);
-                    pools.erase(it);
-                    break;
-                }
-            }
-        }
-
-        // check all pools for finished jobs (update jobs map accordingly)
-        for(Pool& pool : pools){
-            char buffer[256];
-            int bytes_read = read(pool.fd_coord_in, buffer, sizeof(buffer) - 1);
-            
-            if(bytes_read > 0){
-                buffer[bytes_read] = '\0';
-                string msg(buffer);
-                
-                // The pool might have sent multiple messages at once, like "FIN|1|FIN|2|"
-                size_t pos = 0;
-                while((pos = msg.find("FIN|", pos)) != string::npos){
-                    size_t end_pos = msg.find("|", pos + 4);
-                    int finished_id = stoi(msg.substr(pos + 4, end_pos - (pos + 4)));
-                    
-                    jobs[finished_id].status = "Finished";
-                    
-                    pos = end_pos + 1;
-                }
-            }
-        }
-
         command.resize(256, '\0');
 
         // read command from jms_in
@@ -211,6 +173,41 @@ int main(int argc, char *argv[]){
                 exit(1);
             }
             continue;
+        }
+
+        // check all pools for finished jobs (update jobs map accordingly)
+        for(Pool& pool : pools){
+            char buffer[256];
+            int bytes_read;
+            
+            while((bytes_read = read(pool.fd_coord_in, buffer, sizeof(buffer) - 1)) > 0){
+                buffer[bytes_read] = '\0';
+                string msg(buffer);
+                
+                // The pool might have sent multiple messages at once, like "FIN|1|FIN|2|"
+                size_t pos = 0;
+                while((pos = msg.find("FIN|", pos)) != string::npos){
+                    size_t end_pos = msg.find("|", pos + 4);
+                    int finished_id = stoi(msg.substr(pos + 4, end_pos - (pos + 4)));
+                    jobs[finished_id].status = "Finished";
+                    pos = end_pos + 1;
+                }
+            }
+        }
+
+        // zombie cleanup for pools (update vector accordingly)
+        int pool_status;
+        pid_t finished_pool_pid;
+        while((finished_pool_pid = waitpid(-1, &pool_status, WNOHANG)) > 0){
+            // a pool process has finished
+            for(auto it = pools.begin(); it != pools.end(); ++it){
+                if(it->pid == finished_pool_pid){
+                    close(it->fd_coord_in);
+                    close(it->fd_coord_out);
+                    pools.erase(it);
+                    break;
+                }
+            }
         }
 
         // process command
@@ -305,7 +302,7 @@ int main(int argc, char *argv[]){
 
                                     int finished_job_id = job_pid_to_id[finished_pid];
                                     string finish_job_msg = "FIN|" + to_string(finished_job_id) + "|";
-                                    write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size()+1);
+                                    write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size());
                                 }
                                 if(finished_jobs >= jobs_pool){
                                     // Pool has finished max numbers of jobs, so it exits
@@ -326,7 +323,7 @@ int main(int argc, char *argv[]){
 
                                 int finished_job_id = job_pid_to_id[finished_pid];
                                 string finish_job_msg = "FIN|" + to_string(finished_job_id) + "|";
-                                write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size()+1); // coord will read this to know how to update a job's status to "Finished"
+                                write(pool_fd_out, finish_job_msg.c_str(), finish_job_msg.size()); // coord will read this to know how to update a job's status to "Finished"
                             }
 
                             if(finished_jobs >= jobs_pool){
@@ -456,7 +453,9 @@ int main(int argc, char *argv[]){
                 write(selected_pool->fd_coord_out, msg.c_str(), msg.size()+1);
                 // Read the job's pid from pool through selected_pool.fd_coord_in
                 pid_t job_pid;
-                read(selected_pool->fd_coord_in, &job_pid, sizeof(job_pid));
+                while(read(selected_pool->fd_coord_in, &job_pid, sizeof(job_pid)) <= 0){
+                    usleep(1000); // Sleep for 1 millisecond and try again
+                }
 
                 // Populate jobs map with new job's information
                 Job new_job;
@@ -539,7 +538,21 @@ int main(int argc, char *argv[]){
             }
 
             case SHOW_FINISHED: {
-                write(fd_out, "Coord says: SHOW_FINISHED received!", 35);
+                // Argument check
+                if(command.size() > 13){
+                    write(fd_out, "Error: SHOW_FINISHED does not take any arguments. \n", 51);
+                    break;
+                }
+
+                string showfinished = "Finished jobs:\n";
+
+                for(const auto& pair : jobs){
+                    if(pair.second.status == "Finished"){
+                        showfinished += "JobID " + to_string(pair.first) + "\n";
+                    }
+                }
+
+                write(fd_out, showfinished.c_str(), showfinished.size());
                 break;
             }
 

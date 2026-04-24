@@ -1,15 +1,3 @@
-/*
-Communication with jms_coord, through named-pipes
-Job submission
-Query submission (status of service: How many jobs are being executed)
-Presentation of the results from jms_coord
-
-./jms_console -w <jms_in> -r <jms_out> -o <operations_file>
-jms_in amd jms_out: Name of named-pipes to jms_coord
-operations_file: Contains commands to be executed by jms_coord and the tree of jobs
-If EOF or there is no -o <file> argument, it reads commands from the terminal (stdin)
-*/
-
 #include <iostream>
 #include <string>
 #include <unistd.h>
