@@ -52,6 +52,11 @@ void sigchld_handler(int signum){
     // so that it can clean up zombie processes and update job statuses accordingly
 }
 
+volatile sig_atomic_t pool_shutdown = false;
+void sigterm_handler(int signum){
+    pool_shutdown = true; // pool will shut down gracefully
+}
+
 Command encode(const string& command){
 
     size_t space_pos = command.find(' ');
@@ -269,6 +274,14 @@ int main(int argc, char *argv[]){
                             cerr << "Error setting up signal handler" << endl;
                         }
 
+                        struct sigaction sa_term;
+                        sa_term.sa_handler = sigterm_handler;
+                        sigemptyset(&sa_term.sa_mask);
+                        sa_term.sa_flags = 0;
+                        if(sigaction(SIGTERM, &sa_term, NULL) == -1){
+                            cerr << "Error setting up signal handler" << endl;
+                        }
+
                         unordered_map<pid_t, int> job_pid_to_id; // map job pid to job id for status updates
 
                         int pool_fd_in, pool_fd_out;
@@ -287,10 +300,31 @@ int main(int argc, char *argv[]){
                         string pool_message;
                         while(1){
 
+                            if(pool_shutdown){
+                                int killed = 0;
+                                for(const auto& pair : job_pid_to_id){
+                                    if(kill(pair.first, SIGTERM) == -1){
+                                        cerr << "Error sending signal to job process. Continuing...\n";
+                                        continue;
+                                    }
+                                    killed++;
+                                }
+                                cout << "Pool " << getpid() << " killed " << killed << " job(s)." << endl;
+
+                                close(pool_fd_in);
+                                close(pool_fd_out);
+                                unlink(pool_fifo_in.c_str());
+                                unlink(pool_fifo_out.c_str());
+                                exit(0);
+                            }
+
                             if(received_jobs >= jobs_pool){
                                 // Pool has received max numbers of jobs, so reading should be stopped
                                 pid_t finished_pid = wait(NULL); // wait for any child process (job) to finish
                                 if(finished_pid < 0){
+                                    if(errno == EINTR){
+                                        continue; // interrupted by signal, continue to check for finished child processes
+                                    }
                                     if(errno == ECHILD){
                                         close(pool_fd_in);
                                         close(pool_fd_out);
@@ -695,8 +729,40 @@ int main(int argc, char *argv[]){
             }
 
             case SHUTDOWN: {
-                write(fd_out, "Coord says: SHUTDOWN received!", 30);
-                break;
+
+                // argument check
+                if(command.size() > 8){
+                    write(fd_out, "Error: SHUTDOWN does not take any arguments. \n", 46);
+                    break;
+                }
+
+                int in_progress = 0;
+                for(const auto& pair : jobs){
+                    if(pair.second.status == "Active" || pair.second.status == "Suspended"){
+                        in_progress++;
+                    }
+                }
+
+                string shutdown_message = "Served " + to_string(jobs.size()) + " jobs, " + to_string(in_progress) + " were still in progress.\n";
+                write(fd_out, shutdown_message.c_str(), shutdown_message.size());
+
+                // Sends SIGTERM to pools (with signal handler)
+                for(const Pool& pool : pools){
+                    if(kill(pool.pid, SIGTERM) == -1){
+                        write(fd_out, "Error sending signal to pool process. Continuing...\n", 52);
+                        continue;
+                    }
+                    waitpid(pool.pid, NULL, 0); // wait for the pool to finish
+                    close(pool.fd_coord_in);
+                    close(pool.fd_coord_out);
+                }
+
+                close(fd_in);
+                close(fd_out);
+                unlink(fifopath_in.c_str());
+                unlink(fifopath_out.c_str());
+
+                exit(0);
             }
             
             case INVALID: {
