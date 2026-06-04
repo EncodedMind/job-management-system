@@ -36,38 +36,9 @@ Make sure there are no resource leaks or zombie threads
 #include <netinet/in.h> // for sockaddr_in and htons
 #include <stdlib.h> // for exit
 
+#include "protocol.h"
+#include "job_manager.h"
 using namespace std;
-
-typedef enum{
-    SUBMIT,
-    STATUS,
-    STATUS_ALL,
-    SHOW_ACTIVE,
-    SHOW_WORKERS,
-    SHOW_FINISHED,
-    SHUTDOWN,
-    INVALID
-} Command;
-
-Command encode(const string& command){
-
-    size_t space_pos = command.find(' ');
-    string command_part = command.substr(0, space_pos); // get the command part only
-
-    if(command_part == "submit") return SUBMIT;
-    else if(command_part == "status-all") return STATUS_ALL;
-    else if(command_part == "status") return STATUS;
-    else if(command_part == "show-active") return SHOW_ACTIVE;
-    else if(command_part == "show-workers") return SHOW_WORKERS;
-    else if(command_part == "show-finished") return SHOW_FINISHED;
-    else if(command_part == "shutdown") return SHUTDOWN;
-    else return INVALID; // Invalid command
-}
-
-ssize_t write_all(int fd, const void* buff, size_t size);
-ssize_t read_all(int fd, void* buff, size_t size);
-bool send_message(int fd, const string& message);
-bool receive_message(int fd, string& message);
 
 void* handler_function(void* arg){
     int* newsock_ptr = (int*)arg;
@@ -129,8 +100,6 @@ void* handler_function(void* arg){
                 break;
             }
         }
-
-        // string reply = command + " processed"; // Placeholder
 
         if(!send_message(newsock, reply)){
             cerr << "Error sending message to client" << endl;
@@ -252,88 +221,4 @@ int main(int argc, char* argv[]){
     }
 
     return 0;
-}
-
-ssize_t write_all(int fd, const void* buff, size_t size){
-    size_t sent = 0;
-    ssize_t n;
-
-    while(sent < size){
-        // use send() with MSG_NOSIGNAL to avoid SIGPIPE if client has disconnected
-        if((n = send(fd, (const char*)buff + sent, size - sent, MSG_NOSIGNAL)) == -1){
-            if(errno == EINTR){
-                continue; // interrupted by signal, try again
-            }
-            return -1; // error
-        }
-        sent += n;
-    }
-    return sent;
-}
-
-ssize_t read_all(int fd, void* buff, size_t size){
-    size_t received = 0;
-    ssize_t n;
-
-    while(received < size){
-
-        if((n = read(fd, (char*)buff + received, size - received)) == -1){
-            if(errno == EINTR){
-                continue; // interrupted by signal, try again
-            }
-            return -1; // error
-        }
-        else if(n == 0){
-            return 0; // EOF
-        }
-        received += n;
-    }
-    return received;
-}
-
-bool send_message(int fd, const string& message){
-    // we will send the header first, then the message
-    string header = to_string(message.length()) + "|";
-    if(write_all(fd, header.c_str(), header.length()) == -1){
-        return false;
-    }
-
-    if(message.length() > 0){
-        if(write_all(fd, message.c_str(), message.length()) == -1){
-            return false;
-        }
-    }
-    return true;
-}
-
-bool receive_message(int fd, string& message){
-    // read header first
-    string header;
-    char c;
-
-    while(1){
-        ssize_t bytes = read(fd, &c, 1);
-        if(bytes < 0){
-            return false; // error
-        }
-        else if(bytes == 0){
-            return false; // EOF
-        }
-
-        if(c == '|'){ // end of header
-            break;
-        }
-        header += c;
-    }
-
-    int message_length = stoi(header);
-    message.resize(message_length, '\0');
-
-    if(message_length > 0){
-        if(read_all(fd, &message[0], message_length) == -1){
-            return false; // error
-        }
-    }
-
-    return true;
 }
