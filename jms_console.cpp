@@ -18,6 +18,9 @@ ssize_t write_all(int fd, const void* buff, size_t size){
 
     while(sent < size){
         if((n = write(fd, (const char*)buff + sent, size - sent)) == -1){
+            if(errno == EINTR){
+                continue; // interrupted by signal, try again
+            }
             return -1; // error
         }
         sent += n;
@@ -31,6 +34,9 @@ ssize_t read_all(int fd, void* buff, size_t size){
 
     while(received < size){
         if((n = read(fd, (char*)buff + received, size - received)) == -1){
+            if(errno == EINTR){
+                continue; // interrupted by signal, try again
+            }
             return -1; // error
         }
         else if(n == 0){
@@ -48,8 +54,10 @@ bool send_message(int fd, const string& message){
         return false;
     }
 
-    if(write_all(fd, message.c_str(), message.length()) == -1){
-        return false;
+    if(message.length() > 0){
+        if(write_all(fd, message.c_str(), message.length()) == -1){
+            return false;
+        }
     }
 
     return true;
