@@ -10,10 +10,6 @@ Coord places jobs in job queue, protected from a pthread_mutex_t and condition v
 When a worker thread is available, removes job from queue, calls fork()/ exec() and waitpid() until it is over
 If exec() fails, child must terminate and job status finished
 
-Coord listens to a port, accept() connections and assigns each client at a handler thread, which reads the operations, directs them and returns results.
-Needs a text-based protocol for operation - result exchange to TCP stream.
-Thread accepts socket => handler thread (pthread_create + pthread_detach), ώστε ο listener να πηγαίνει αμέσως στο επόμενο accept()
-
 Each job creates a directory as soon as it starts where it saves the results of its execution: (same as hw1)
 outputs_jobid_pid_date_time (outputs_3_1234_20260421_173000)
 Directories in <path> given in coord (could be different than working directory) (!)
@@ -42,10 +38,111 @@ Make sure there are no resource leaks or zombie threads
 
 using namespace std;
 
+typedef enum{
+    SUBMIT,
+    STATUS,
+    STATUS_ALL,
+    SHOW_ACTIVE,
+    SHOW_WORKERS,
+    SHOW_FINISHED,
+    SHUTDOWN,
+    INVALID
+} Command;
+
+Command encode(const string& command){
+
+    size_t space_pos = command.find(' ');
+    string command_part = command.substr(0, space_pos); // get the command part only
+
+    if(command_part == "submit") return SUBMIT;
+    else if(command_part == "status-all") return STATUS_ALL;
+    else if(command_part == "status") return STATUS;
+    else if(command_part == "show-active") return SHOW_ACTIVE;
+    else if(command_part == "show-workers") return SHOW_WORKERS;
+    else if(command_part == "show-finished") return SHOW_FINISHED;
+    else if(command_part == "shutdown") return SHUTDOWN;
+    else return INVALID; // Invalid command
+}
+
 ssize_t write_all(int fd, const void* buff, size_t size);
 ssize_t read_all(int fd, void* buff, size_t size);
 bool send_message(int fd, const string& message);
 bool receive_message(int fd, string& message);
+
+void* handler_function(void* arg){
+    int* newsock_ptr = (int*)arg;
+    int newsock = *newsock_ptr;
+    delete newsock_ptr; // free the dynamically allocated memory for newsock
+
+    // detach
+    int err;
+    if(err = pthread_detach(pthread_self()) != 0){
+        cerr << "Error detaching thread" << endl;
+        close(newsock);
+        return nullptr;
+    }
+
+    // Read commands in repeat and send results back to client until disconnection (read() returns 0)
+    string command;
+    while(receive_message(newsock, command)){
+        if(command.empty()){
+            continue; // ignore empty commands
+        }
+
+        cout << "Client sent: " << command << endl; // DEBUG
+
+        // process command
+
+        string reply;
+
+        switch(encode(command)){
+            case SUBMIT: {
+                reply = "Coord says: SUBMIT executed successfully.";
+                break;
+            }
+            case STATUS: {
+                reply = "Coord says: STATUS executed successfully.";
+                break;
+            }
+            case STATUS_ALL: {
+                reply = "Coord says: STATUS-ALL executed successfully.";
+                break;
+            }
+            case SHOW_ACTIVE: {
+                reply = "Coord says: SHOW-ACTIVE executed successfully.";
+                break;
+            }
+            case SHOW_WORKERS: {
+                reply = "Coord says: SHOW-WORKERS executed successfully.";
+                break;
+            }
+            case SHOW_FINISHED: {
+                reply = "Coord says: SHOW-FINISHED executed successfully.";
+                break;
+            }
+            case SHUTDOWN: {
+                reply = "Coord says: SHUTDOWN executed successfully.";
+                break;
+            }
+            case INVALID: {
+                reply = "Coord says: INVALID command.";
+                break;
+            }
+        }
+
+        // string reply = command + " processed"; // Placeholder
+
+        if(!send_message(newsock, reply)){
+            cerr << "Error sending message to client" << endl;
+            break; // exit the loop and close the connection
+        }
+    }
+
+    cout << "Client disconnected!" << endl; // DEBUG
+    close(newsock);
+    
+    pthread_exit(nullptr);
+}
 
 int main(int argc, char* argv[]){
 
@@ -141,25 +238,17 @@ int main(int argc, char* argv[]){
 
         cout << "New client connected!" << endl; // DEBUG
 
-        // Read commands in repeat and send results back to client until disconnection (read() returns 0)
-        string command;
-        while(receive_message(newsock, command)){
-            if(command.empty()){
-                continue; // ignore empty commands
-            }
+        // create new handler thread
 
-            cout << "Client sent: " << command << endl; // DEBUG
-
-            string reply = command + " processed"; // Placeholder
-
-            if(!send_message(newsock, reply)){
-                cerr << "Error sending message to client" << endl;
-                break; // exit the loop and close the connection
-            }
+        pthread_t handler_thread;
+        int err;
+        int* newsock_ptr = new int(newsock); // dynamically allocate memory for newsock to pass to thread
+        if(err = pthread_create(&handler_thread, NULL, handler_function, (void*)newsock_ptr) != 0){
+            cerr << "Error creating handler thread" << endl;
+            close(newsock);
+            continue; // try accepting the next connection
         }
 
-        cout << "Client disconnected!" << endl; // DEBUG
-        close(newsock);
     }
 
     return 0;
