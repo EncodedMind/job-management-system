@@ -1,26 +1,3 @@
-/*
-
-Need a struct WorkerStats that holds thread_id, is_idle, current_job_id (if not idle), jobs_served and a vector<WorkerStats> worker_pool_stats in shared data that is updated by worker threads and read by handler threads when show-workers command is called. Need to lock mutex when accessing this shared variable.
-For thread_id, use pthread_self()
-current_job_id = -1, if is_idle is true
-
-Commands:
-
-7) shutdown
-
-- Stops accepting new connections
-- Creates shared variable "shutting_down"
-- Broadcast to conditions so that they wake up all worker threads
-
-- Each idle thread is terminated
-- Workers wait with waitpid() for their children to finish and then they terminate
-- Jobs in queue are discarded
-- Main thread pthread_join() to all worker threads
-- Closes listening socket
-- Statistics (Served X jobs, Y were running, Z were still queued) (βλ. hw1)
-
-*/
-
 #include <iostream>
 #include <string>
 #include <queue> 
@@ -67,9 +44,11 @@ struct Job{
 };
 
 // shared data
+bool shutting_down = false; // indicates whether the coordinator is shutting down
 queue<int> job_queue; // holds JobIDs of waiting jobs
 unordered_map<int, Job> job_table; // maps JobID to Job struct
 int next_job_id = 1;
+int server_socket = -1; // to be initialized in main, used in signal handler
 
 // mutexes and condition variables for synchronization
 pthread_mutex_t shared_state_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -359,7 +338,56 @@ void* handler_function(void* arg){
             }
 
             case SHUTDOWN: {
-                reply = "Coord says: SHUTDOWN executed successfully.";
+
+                // Argument check
+                if(command.size() > 8){
+                    reply = "Error: SHUTDOWN does not take any arguments. \n";
+                    break;
+                }
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                // set shutting_down variable to true
+                shutting_down = true;
+
+                // find how many are running and how many are still queued
+                int in_progress = 0, queued = 0, finished = 0;
+                for(const auto& job : job_table){
+                    if(job.second.status == "Active"){
+                        in_progress++;
+                    }
+                    else if(job.second.status == "Queued"){
+                        queued++;
+                    }
+                    else if(job.second.status == "Finished"){
+                        finished++;
+                    }
+                }
+
+                reply = "Served " + to_string(finished) + " jobs, ";
+                reply += to_string(in_progress) + " were running, ";
+                reply += to_string(queued) + " were still queued\n";
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }
+
+                // wake up all worker threads
+                if((err = pthread_cond_broadcast(&available_job_exists)) != 0){
+                    cerr << "Error broadcasting condition variable" << endl;
+                    break;
+                }
+
+                // make main thread stop accepting new connections
+                shutdown(server_socket, SHUT_RDWR); // shutdown the socket to unblock accept()
+
                 break;
             }
 
@@ -420,6 +448,18 @@ void* worker_function(void* arg){
         // while + wait
         while(job_queue.empty()){
             pthread_cond_wait(&available_job_exists, &shared_state_mutex);
+        }
+
+        // check if wake-up was due to shutdown signal
+        if(shutting_down){
+            // unlock mutex before exiting
+            if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                cerr << "Error unlocking mutex" << endl;
+                exit(1);
+            }
+
+            // return to main to be joined
+            break;
         }
 
         // change shared data
@@ -587,8 +627,7 @@ int main(int argc, char* argv[]){
 
     // create socket, bind, listen
 
-    int sock;
-    if((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+    if((server_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0){
         cerr << "Error creating socket" << endl;
         exit(1);
     }
@@ -603,17 +642,17 @@ int main(int argc, char* argv[]){
     server.sin_port = htons(port);
 
     int optval = 1;
-    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0){ // allow reuse of address
+    if(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0){ // allow reuse of address
         cerr << "Error setting socket options" << endl;
         exit(1);
     }
 
-    if(bind(sock, serverptr, sizeof(server)) < 0){
+    if(bind(server_socket, serverptr, sizeof(server)) < 0){
         cerr << "Error binding socket" << endl;
         exit(1);
     }
 
-    if(listen(sock, workers) < 0){ // backlog = workers, since we can only handle that many clients at a time
+    if(listen(server_socket, workers) < 0){ // backlog = workers, since we can only handle that many clients at a time
         cerr << "Error listening on socket" << endl;
         exit(1);
     }
@@ -635,9 +674,14 @@ int main(int argc, char* argv[]){
     while(1){
         // accept new client connection
 
-        if((newsock = accept(sock, clientptr, &clientlen)) < 0){
-            cerr << "Error accepting connection" << endl;
-            continue; // try accepting the next connection
+        if((newsock = accept(server_socket, clientptr, &clientlen)) < 0){
+            if(!shutting_down){ // if error is not due to shutdown, print error
+                cerr << "Error accepting connection" << endl;
+                continue; // try accepting the next connection
+            }
+            else{
+                break; // if shutting down, exit the loop
+            }
         }
 
         cout << "New client connected!" << endl; // DEBUG
@@ -654,6 +698,26 @@ int main(int argc, char* argv[]){
         }
 
     }
+
+    // shutdown sequence
+
+    // clear job queue (optional, but nice practice)
+    while(!job_queue.empty()){
+        job_queue.pop();
+    }
+
+    // join all worker threads
+    for(const auto& pair : worker_pool_stats){
+        pthread_t worker_thread_id = pair.first;
+        int err;
+        if((err = pthread_join(worker_thread_id, NULL)) != 0){
+            cerr << "Error joining worker thread" << endl;
+            continue; // try joining the next thread
+        }
+    }
+
+    // close the socket
+    close(server_socket);
 
     return 0;
 }
