@@ -2,13 +2,6 @@
 
 Commands:
 
-4) show-active (same as hw1)
-Returns the jobIDs whose status is Active:
-Active jobs:
-JobID <jobID1>
-...
-JobID <jobIDn>
-
 5) show-workers (similar to hw1)
 Finds each worker thread's id (pthread_self()) and their state (idle or JobID serving at the moment) and number of jobs each one has served
 thread id => cast to unsigned long
@@ -260,7 +253,34 @@ void* handler_function(void* arg){
                 break;
             }
             case SHOW_ACTIVE: {
-                reply = "Coord says: SHOW-ACTIVE executed successfully.";
+
+                // Argument check
+                if(command.size() > 11){
+                    reply = "Error: SHOW_ACTIVE does not take any arguments. \n";
+                    break;
+                }
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                reply = "Active jobs:\n";
+
+                for(const auto& pair : job_table){
+                    if(pair.second.status == "Active"){
+                        reply += "JobID " + to_string(pair.first) + "\n";
+                    }
+                }
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }
+
                 break;
             }
             case SHOW_WORKERS: {
