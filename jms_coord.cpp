@@ -1,19 +1,6 @@
 /*
 
 Commands:
-1) submit <job>
-job: command arg1 ... argn
-Finds next available worker thread or queue if all threads are busy
-worker thread: fork()/ exec() to execute it
-Returns JobID (JobID: 3)
-Does not block. Returns JobID as soon as job is assigned (or queued)
-
-2) status <JobID> (same as hw1, with an extra message)
-Returns this for this job:
-JobID <JobID> Status: <status>
-status: Finished, Suspended, Active
-if Active, add: (running for X sec)
-if JobID does not exist: JobID X not found
 
 3) status-all [n] (same as hw1)
 Returns the status of all jobs (format same as 2)
@@ -165,7 +152,51 @@ void* handler_function(void* arg){
                 break;
             }
             case STATUS: {
-                reply = "Coord says: STATUS executed successfully.";
+
+                // Argument check
+                command.erase(0, 7);
+                if(command.empty()){
+                    reply = "Error: Please provide a JobID. \n";
+                    break;
+                }
+
+                // Get JobID from command
+                int job_id = stoi(command);
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                // Check if job exists
+                if(job_table.find(job_id) == job_table.end()){
+                    reply = "JobID " + to_string(job_id) + " not found.\n";
+                }
+                else{
+                    // Get status of the job (Queued, Active, Finished)
+                    Job target_job = job_table[job_id];
+                    reply = "JobID: " + to_string(job_id) + " Status: " + target_job.status;
+
+                    // If active, add for how many seconds it has been running
+                    if(target_job.status == "Active"){
+                        int seconds = difftime(time(nullptr), target_job.start_time);
+                        reply += " (running for " + to_string(seconds) + " seconds)";
+                    }
+                    else if(target_job.status == "Queued"){ // If queued, add message
+                        reply += " (waiting in job queue)";
+                    }
+
+                    reply += "\n";
+                }
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }
+
                 break;
             }
             case STATUS_ALL: {
