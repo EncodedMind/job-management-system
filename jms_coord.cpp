@@ -2,10 +2,6 @@
 
 Commands:
 
-3) status-all [n] (same as hw1)
-Returns the status of all jobs (format same as 2)
-If n, returns jobs submitted in the last n seconds
-
 4) show-active (same as hw1)
 Returns the jobIDs whose status is Active:
 Active jobs:
@@ -200,7 +196,67 @@ void* handler_function(void* arg){
                 break;
             }
             case STATUS_ALL: {
-                reply = "Coord says: STATUS-ALL executed successfully.";
+
+                int n = -1;
+
+                // Argument check
+                if(command.size() > 11){
+                    command.erase(0, 11);
+                    if(command.empty()){
+                        reply = "Error: Invalid argument. \n";
+                        break;
+                    }
+                    else{
+                        n = stoi(command);
+                    }
+                }
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                // If no n provided, print status of all jobs
+                // If n is provided, print status for jobs submitted in last n seconds
+
+                reply = "";
+                for(const auto& pair : job_table){
+                    bool print_job = false;
+
+                    if(n == -1){
+                        print_job = true;
+                    }
+                    else{
+                        if(difftime(time(nullptr), pair.second.submit_time) <= n){
+                            print_job = true;
+                        }
+                    }
+
+                    if(print_job){
+                        reply += "JobID: " + to_string(pair.first) + " Status: " + pair.second.status;
+                        if(pair.second.status == "Active"){
+                            int seconds = difftime(time(nullptr), pair.second.start_time);
+                            reply += " (running for " + to_string(seconds) + " seconds)";
+                        }
+                        else if(pair.second.status == "Queued"){
+                            reply += " (waiting in job queue)";
+                        }
+                        reply += "\n";
+                    }
+                }
+
+                if(reply.empty()){
+                    reply = "No jobs found.\n";
+                }
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }
+
                 break;
             }
             case SHOW_ACTIVE: {
