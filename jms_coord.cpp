@@ -2,11 +2,11 @@
 
 jms_coord:
 
-jobs: worker threads (thread pool) in jms_coord: fork() and exec() for each job
-Max jobs in parallel = # worker threads
+jobs: worker threads (thread pool) in jms_coord:
+fork() and exec() for each job
 
 Coord creates thread pool (the worker threads) and monitors if jobs are active or have terminated.
-Coord places jobs in job queue, protected from a pthread_mutex_t and condition variables.
+
 When a worker thread is available, removes job from queue, calls fork()/ exec() and waitpid() until it is over
 If exec() fails, child must terminate and job status finished
 
@@ -17,17 +17,23 @@ files in dir: stdout_jobid (the output of the job to stdout) and stderr_jobid (t
 
 SYNCHRONIZATION:
 
-Coord creates thread pool with pthread_create()
-An extra listener thread (or the initial thread) is responsible for accept() to socket for new clients.
-For each client, coord creates a handler thread which: reads from socket, directs them, returns results to client.
-Handler thread can be either detached (pthread_detach) or with pthread_join() from coord
 Make sure there are no resource leaks or zombie threads
+
+job table: for each job, it holds: JobID, child pid, status (queued/ active/ finished),
+time of submission, start time, end time and everything else needed.
+This is updated from worker threads
+
+The shared data must be protected with pthread_mutex_t and use condition variables (pthread_cond_t),
+such as "available_job_exists_in_queue", "job_status_updated" and more.
 
 */
 
 #include <iostream>
 #include <string>
+#include <queue> 
+#include <unordered_map>
 #include <cstring> // for memcpy
+
 #include <unistd.h> // for getopt, read, write, close
 #include <fcntl.h> // for open
 #include <sys/socket.h> // for socket, bind, listen, accept
@@ -35,10 +41,30 @@ Make sure there are no resource leaks or zombie threads
 #include <netdb.h> // for gethostbyname
 #include <netinet/in.h> // for sockaddr_in and htons
 #include <stdlib.h> // for exit
+#include <pthread.h> // for threads, mutexes and condition variables
 
 #include "protocol.h"
 #include "job_manager.h"
 using namespace std;
+
+struct Job{
+    int JobID;
+    pid_t pid;
+    string status; // Queued, Active, Finished
+    time_t submit_time;
+    time_t start_time;
+    time_t end_time;
+    string command;
+};
+
+// shared data
+queue<int> job_queue; // holds JobIDs of waiting jobs
+unordered_map<int, Job> job_table; // maps JobID to Job struct
+int next_job_id = 1;
+
+// mutexes and condition variables for synchronization
+pthread_mutex_t shared_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t available_job_exists = PTHREAD_COND_INITIALIZER;
 
 void* handler_function(void* arg){
     int* newsock_ptr = (int*)arg;
@@ -47,7 +73,7 @@ void* handler_function(void* arg){
 
     // detach
     int err;
-    if(err = pthread_detach(pthread_self()) != 0){
+    if((err = pthread_detach(pthread_self())) != 0){
         cerr << "Error detaching thread" << endl;
         close(newsock);
         return nullptr;
@@ -68,7 +94,34 @@ void* handler_function(void* arg){
 
         switch(encode(command)){
             case SUBMIT: {
-                reply = "Coord says: SUBMIT executed successfully.";
+                // create new Job
+                Job new_job;
+                new_job.JobID = next_job_id++;
+                new_job.status = "Queued";
+                new_job.submit_time = time(nullptr);
+                new_job.command = command;
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    exit(1);
+                }
+
+                // change shared data
+                job_queue.push(new_job.JobID);
+                job_table[new_job.JobID] = new_job;
+
+                // signal condition variable
+                pthread_cond_signal(&available_job_exists);
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    exit(1);
+                }
+
+                reply = "JobID: " + to_string(new_job.JobID);
                 break;
             }
             case STATUS: {
@@ -111,6 +164,42 @@ void* handler_function(void* arg){
     close(newsock);
     
     pthread_exit(nullptr);
+}
+
+void* worker_function(void* arg){
+    (void)arg; // to silence unused parameter warning
+    
+    while(1){ // repeatedly check for new jobs to execute
+
+        // lock mutex
+        int err;
+        if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+            cerr << "Error locking mutex" << endl;
+            exit(1);
+        }
+
+        // while + wait
+        while(job_queue.empty()){
+            pthread_cond_wait(&available_job_exists, &shared_state_mutex);
+        }
+
+        // change shared data
+        int job_id = job_queue.front();
+        job_queue.pop();
+
+        // unlock mutex
+        if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+            cerr << "Error unlocking mutex" << endl;
+            exit(1);
+        }
+
+        cout << "Worker thread picked up JobID " << job_id << endl; // DEBUG
+
+        // execute the job
+
+    }
+    
+    return nullptr;
 }
 
 int main(int argc, char* argv[]){
@@ -197,6 +286,16 @@ int main(int argc, char* argv[]){
     
     cout << "Coord started. Listening on port " << port << "..." << endl; // DEBUG
 
+    // create worker threads
+    for(int i = 0; i < workers; i++){
+        pthread_t worker_thread;
+        int err;
+        if((err = pthread_create(&worker_thread, NULL, worker_function, NULL)) != 0){
+            cerr << "Error creating worker thread" << endl;
+            exit(1);
+        }
+    }
+
     while(1){
         // accept new client connection
 
@@ -212,7 +311,7 @@ int main(int argc, char* argv[]){
         pthread_t handler_thread;
         int err;
         int* newsock_ptr = new int(newsock); // dynamically allocate memory for newsock to pass to thread
-        if(err = pthread_create(&handler_thread, NULL, handler_function, (void*)newsock_ptr) != 0){
+        if((err = pthread_create(&handler_thread, NULL, handler_function, (void*)newsock_ptr)) != 0){
             cerr << "Error creating handler thread" << endl;
             close(newsock);
             continue; // try accepting the next connection
