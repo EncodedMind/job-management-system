@@ -1,30 +1,60 @@
 /*
 
-jms_coord:
+Commands:
+1) submit <job>
+job: command arg1 ... argn
+Finds next available worker thread or queue if all threads are busy
+worker thread: fork()/ exec() to execute it
+Returns JobID (JobID: 3)
+Does not block. Returns JobID as soon as job is assigned (or queued)
 
-jobs: worker threads (thread pool) in jms_coord:
-fork() and exec() for each job
+2) status <JobID> (same as hw1, with an extra message)
+Returns this for this job:
+JobID <JobID> Status: <status>
+status: Finished, Suspended, Active
+if Active, add: (running for X sec)
+if JobID does not exist: JobID X not found
 
-Coord creates thread pool (the worker threads) and monitors if jobs are active or have terminated.
+3) status-all [n] (same as hw1)
+Returns the status of all jobs (format same as 2)
+If n, returns jobs submitted in the last n seconds
 
-When a worker thread is available, removes job from queue, calls fork()/ exec() and waitpid() until it is over
-If exec() fails, child must terminate and job status finished
+4) show-active (same as hw1)
+Returns the jobIDs whose status is Active:
+Active jobs:
+JobID <jobID1>
+...
+JobID <jobIDn>
 
-Each job creates a directory as soon as it starts where it saves the results of its execution: (same as hw1)
-outputs_jobid_pid_date_time (outputs_3_1234_20260421_173000)
-Directories in <path> given in coord (could be different than working directory) (!)
-files in dir: stdout_jobid (the output of the job to stdout) and stderr_jobid (the output to stderr)
+5) show-workers (similar to hw1)
+Finds each worker thread's id (pthread_self()) and their state (idle or JobID serving at the moment) and number of jobs each one has served
+thread id => cast to unsigned long
+Returns:
+Worker Thread ID & State & Served:
+<id1> idle served X
+...
+<idn> running JobID X served X
+(ίσως με tabs μεταξύ κάθε κατηγορίας για να είναι πιο όμορφο, όπως στο pdf)
 
-SYNCHRONIZATION:
+6) show-finished (same as hw1)
+Returns the jobIDs whose status is Finished:
+Finished jobs:
+JobID <jobID1>
+...
+JobID <jobIDn>
 
-Make sure there are no resource leaks or zombie threads
+7) shutdown
 
-job table: for each job, it holds: JobID, child pid, status (queued/ active/ finished),
-time of submission, start time, end time and everything else needed.
-This is updated from worker threads
+- Stops accepting new connections
+- Creates shared variable "shutting_down"
+- Broadcast to conditions so that they wake up all worker threads
 
-The shared data must be protected with pthread_mutex_t and use condition variables (pthread_cond_t),
-such as "available_job_exists_in_queue", "job_status_updated" and more.
+- Each idle thread is terminated
+- Workers wait with waitpid() for their children to finish and then they terminate
+- Jobs in queue are discarded
+- Main thread pthread_join() to all worker threads
+- Closes listening socket
+- Statistics (Served X jobs, Y were running, Z were still queued) (βλ. hw1)
 
 */
 
@@ -32,12 +62,16 @@ such as "available_job_exists_in_queue", "job_status_updated" and more.
 #include <string>
 #include <queue> 
 #include <unordered_map>
+#include <vector>
+#include <sstream>
+#include <ctime>
 #include <cstring> // for memcpy
 
 #include <unistd.h> // for getopt, read, write, close
 #include <fcntl.h> // for open
 #include <sys/socket.h> // for socket, bind, listen, accept
 #include <sys/stat.h> // for mkdir
+#include <sys/wait.h> // for waitpid
 #include <netdb.h> // for gethostbyname
 #include <netinet/in.h> // for sockaddr_in and htons
 #include <stdlib.h> // for exit
@@ -65,6 +99,9 @@ int next_job_id = 1;
 // mutexes and condition variables for synchronization
 pthread_mutex_t shared_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t available_job_exists = PTHREAD_COND_INITIALIZER;
+
+string path;
+void child_function(struct Job &job, const string &path);
 
 void* handler_function(void* arg){
     int* newsock_ptr = (int*)arg;
@@ -94,6 +131,9 @@ void* handler_function(void* arg){
 
         switch(encode(command)){
             case SUBMIT: {
+                // remove "submit " from command
+                command.erase(0, 7);
+                
                 // create new Job
                 Job new_job;
                 new_job.JobID = next_job_id++;
@@ -197,6 +237,60 @@ void* worker_function(void* arg){
 
         // execute the job
 
+        // lock mutex
+        if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+            cerr << "Error locking mutex" << endl;
+            exit(1);
+        }
+
+        // update job status to "Active" and start_time
+        job_table[job_id].status = "Active";
+        job_table[job_id].start_time = time(nullptr);
+        
+        // unlock mutex
+        if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+            cerr << "Error unlocking mutex" << endl;
+            exit(1);
+        }
+
+        // fork
+        pid_t child_pid = fork();
+        switch(child_pid){
+            case -1: // error
+                cerr << "Error forking" << endl;
+                exit(1);
+                break;
+            case 0: // child process - this will execute the job
+                child_function(job_table[job_id], path);
+                break;
+            default: // parent process
+
+                // wait for child to finish
+                if(waitpid(child_pid, NULL, 0) == -1){
+                    cerr << "Error waiting for child process" << endl;
+                    exit(1);
+                }
+
+                // lock mutex
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    exit(1);
+                }
+
+                // update job status to "Finished" and end_time and job pid
+                job_table[job_id].status = "Finished";
+                job_table[job_id].end_time = time(nullptr);
+                job_table[job_id].pid = child_pid;
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    exit(1);
+                }
+
+                break;
+        }
+        
     }
     
     return nullptr;
@@ -239,14 +333,20 @@ int main(int argc, char* argv[]){
     }
 
     int port = stoi(p_arg);
-    string path = l_arg;
+    path = l_arg;
     int workers = stoi(n_arg);
 
-    // create directory if it doesn't exist, otherwise delete and recreate it
+    // create directory if it doesn't exist
 
     if(mkdir(path.c_str(), 0777) == -1 && errno != EEXIST){ // if exists, don't try to remove it (security issue)
         cerr << "Error creating directory" << endl;
         exit(1);
+    }
+
+    // clean up previous execution files
+    string cleanup_cmd = "rm -rf " + path + "/*";
+    if (system(cleanup_cmd.c_str()) == -1) {
+        cerr << "Warning: Failed to clean up directory" << endl;
     }
 
     // create socket, bind, listen
@@ -320,4 +420,65 @@ int main(int argc, char* argv[]){
     }
 
     return 0;
+}
+
+void child_function(struct Job &job, const string &path){
+    
+    // create directory and files for job outputs
+
+    time_t timestamp = time(nullptr);
+    struct tm* timeinfo = localtime(&timestamp);
+    char date_str[9];
+    char time_str[7];
+    strftime(date_str, sizeof(date_str), "%Y%m%d", timeinfo);
+    strftime(time_str, sizeof(time_str), "%H%M%S", timeinfo);
+    
+    string job_path = path + "/outputs_" + to_string(job.JobID) + "_" + to_string(getpid()) + "_" + date_str + "_" + time_str;
+                            
+    if(mkdir(job_path.c_str(), 0777) == -1){
+        cerr << "Error creating directory" << endl;
+        exit(1);
+    }
+
+    string filedout_path = job_path + "/stdout_" + to_string(job.JobID);
+    string filederr_path = job_path + "/stderr_" + to_string(job.JobID);
+
+    int filedout;
+    if((filedout = open(filedout_path.c_str(), O_WRONLY | O_CREAT, 0666)) < 0){
+        cerr << "Error opening fifo for reading" << endl;
+        exit(1);
+    }
+
+    int filederr;
+    if((filederr = open(filederr_path.c_str(), O_WRONLY | O_CREAT, 0666)) < 0){
+        cerr << "Error opening fifo for writing" << endl;
+        exit(1);
+    }
+
+    dup2(filedout, STDOUT_FILENO);
+    dup2(filederr, STDERR_FILENO);
+
+    // execute the command
+
+    istringstream iss(job.command);
+    vector<string> arguments;
+    while(iss){
+        string arg;
+        iss >> arg;
+        if(!arg.empty()){
+            arguments.push_back(arg);
+        }
+    }
+
+    char* args[arguments.size() + 1];
+    for(size_t i = 0; i < arguments.size(); i++){
+        args[i] = const_cast<char*>(arguments[i].c_str());
+    }
+    args[arguments.size()] = nullptr;
+    execvp(args[0], args);
+
+    // exec failed. Terminate child process
+    cerr << "Error executing command" << endl;
+    exit(1);
+    
 }
