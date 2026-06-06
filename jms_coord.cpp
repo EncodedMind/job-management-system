@@ -1,16 +1,10 @@
 /*
 
-Commands:
+Need a struct WorkerStats that holds thread_id, is_idle, current_job_id (if not idle), jobs_served and a vector<WorkerStats> worker_pool_stats in shared data that is updated by worker threads and read by handler threads when show-workers command is called. Need to lock mutex when accessing this shared variable.
+For thread_id, use pthread_self()
+current_job_id = -1, if is_idle is true
 
-5) show-workers (similar to hw1)
-Finds each worker thread's id (pthread_self()) and their state (idle or JobID serving at the moment) and number of jobs each one has served
-thread id => cast to unsigned long
-Returns:
-Worker Thread ID & State & Served:
-<id1> idle served X
-...
-<idn> running JobID X served X
-(ίσως με tabs μεταξύ κάθε κατηγορίας για να είναι πιο όμορφο, όπως στο pdf)
+Commands:
 
 7) shutdown
 
@@ -49,6 +43,18 @@ Worker Thread ID & State & Served:
 #include "protocol.h"
 #include "job_manager.h"
 using namespace std;
+
+// worker stats
+
+struct WorkerStats{
+    pthread_t thread_id;
+    bool is_idle; // true or false
+    int current_job_id; // -1 if idle
+    int jobs_served;
+};
+
+pthread_mutex_t worker_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
+unordered_map<pthread_t, WorkerStats> worker_pool_stats;
 
 struct Job{
     int JobID;
@@ -281,7 +287,42 @@ void* handler_function(void* arg){
             }
 
             case SHOW_WORKERS: {
-                reply = "Coord says: SHOW-WORKERS executed successfully.";
+
+                // Argument check
+                if(command.size() > 12){
+                    reply = "Error: SHOW_WORKERS does not take any arguments. \n";
+                    break;
+                }
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&worker_stats_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                reply = "Worker TID, State, Served:\n";
+
+                for(const auto& pair : worker_pool_stats){
+                    const WorkerStats& worker = pair.second;
+                    stringstream ss;
+                    ss << "0x" << hex << (unsigned long)worker.thread_id;
+                    reply += ss.str() + " ";
+                    if(worker.is_idle){
+                        reply += "idle ";
+                    }
+                    else{
+                        reply += "running JobID " + to_string(worker.current_job_id) + " ";
+                    }
+                    reply += "served " + to_string(worker.jobs_served) + "\n";
+                }
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&worker_stats_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }
+
                 break;
             }
 
@@ -342,7 +383,31 @@ void* handler_function(void* arg){
 
 void* worker_function(void* arg){
     (void)arg; // to silence unused parameter warning
+
+    // initialize worker stats
+
+    WorkerStats worker;
+
+    // lock mutex
+    int err;
+    if((err = pthread_mutex_lock(&worker_stats_mutex)) != 0){
+        cerr << "Error locking worker stats mutex" << endl;
+        exit(1);
+    }
+
+    worker.thread_id = pthread_self();
+    worker.is_idle = true;
+    worker.current_job_id = -1;
+    worker.jobs_served = 0;
+
+    worker_pool_stats[worker.thread_id] = worker;
     
+    // unlock mutex
+    if((err = pthread_mutex_unlock(&worker_stats_mutex)) != 0){
+        cerr << "Error unlocking worker stats mutex" << endl;
+        exit(1);
+    }
+
     while(1){ // repeatedly check for new jobs to execute
 
         // lock mutex
@@ -368,6 +433,24 @@ void* worker_function(void* arg){
         }
 
         cout << "Worker thread picked up JobID " << job_id << endl; // DEBUG
+
+        // update worker status and current_job_id
+
+        // lock mutex
+        if((err = pthread_mutex_lock(&worker_stats_mutex)) != 0){
+            cerr << "Error locking worker stats mutex" << endl;
+            exit(1);
+        }
+
+        // update stats
+        worker_pool_stats[pthread_self()].is_idle = false;
+        worker_pool_stats[pthread_self()].current_job_id = job_id;
+
+        // unlock mutex
+        if((err = pthread_mutex_unlock(&worker_stats_mutex)) != 0){
+            cerr << "Error unlocking worker stats mutex" << endl;
+            exit(1);
+        }
 
         // execute the job
 
@@ -419,6 +502,25 @@ void* worker_function(void* arg){
                 // unlock mutex
                 if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
                     cerr << "Error unlocking mutex" << endl;
+                    exit(1);
+                }
+
+                // update worker stats to mark worker as idle
+
+                // lock mutex
+                if((err = pthread_mutex_lock(&worker_stats_mutex)) != 0){
+                    cerr << "Error locking worker stats mutex" << endl;
+                    exit(1);
+                }
+
+                // update stats
+                worker_pool_stats[pthread_self()].is_idle = true;
+                worker_pool_stats[pthread_self()].current_job_id = -1;
+                worker_pool_stats[pthread_self()].jobs_served++;
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&worker_stats_mutex)) != 0){
+                    cerr << "Error unlocking worker stats mutex" << endl;
                     exit(1);
                 }
 
