@@ -12,13 +12,6 @@ Worker Thread ID & State & Served:
 <idn> running JobID X served X
 (ίσως με tabs μεταξύ κάθε κατηγορίας για να είναι πιο όμορφο, όπως στο pdf)
 
-6) show-finished (same as hw1)
-Returns the jobIDs whose status is Finished:
-Finished jobs:
-JobID <jobID1>
-...
-JobID <jobIDn>
-
 7) shutdown
 
 - Stops accepting new connections
@@ -140,6 +133,7 @@ void* handler_function(void* arg){
                 reply = "JobID: " + to_string(new_job.JobID);
                 break;
             }
+
             case STATUS: {
 
                 // Argument check
@@ -188,6 +182,7 @@ void* handler_function(void* arg){
 
                 break;
             }
+
             case STATUS_ALL: {
 
                 int n = -1;
@@ -252,6 +247,7 @@ void* handler_function(void* arg){
 
                 break;
             }
+
             case SHOW_ACTIVE: {
 
                 // Argument check
@@ -283,20 +279,51 @@ void* handler_function(void* arg){
 
                 break;
             }
+
             case SHOW_WORKERS: {
                 reply = "Coord says: SHOW-WORKERS executed successfully.";
                 break;
             }
+
             case SHOW_FINISHED: {
-                reply = "Coord says: SHOW-FINISHED executed successfully.";
+
+                // Argument check
+                if(command.size() > 13){
+                    reply = "Error: show-finished does not take any arguments. \n";
+                    break;
+                }
+
+                // lock mutex
+                int err;
+                if((err = pthread_mutex_lock(&shared_state_mutex)) != 0){
+                    cerr << "Error locking mutex" << endl;
+                    break;
+                }
+
+                reply = "Finished jobs:\n";
+
+                for(const auto& pair : job_table){
+                    if(pair.second.status == "Finished"){
+                        reply += "JobID " + to_string(pair.first) + "\n";
+                    }
+                }
+
+                // unlock mutex
+                if((err = pthread_mutex_unlock(&shared_state_mutex)) != 0){
+                    cerr << "Error unlocking mutex" << endl;
+                    break;
+                }                
+
                 break;
             }
+
             case SHUTDOWN: {
                 reply = "Coord says: SHUTDOWN executed successfully.";
                 break;
             }
+
             case INVALID: {
-                reply = "Coord says: INVALID command.";
+                reply = "Coord says: Invalid command!";
                 break;
             }
         }
