@@ -77,8 +77,6 @@ void* handler_function(void* arg){
             continue; // ignore empty commands
         }
 
-        cout << "Client sent: " << command << endl; // DEBUG
-
         // process command
 
         string reply;
@@ -403,7 +401,6 @@ void* handler_function(void* arg){
         }
     }
 
-    cout << "Client disconnected!" << endl; // DEBUG
     close(newsock);
     
     pthread_exit(nullptr);
@@ -446,7 +443,7 @@ void* worker_function(void* arg){
         }
 
         // while + wait
-        while(job_queue.empty()){
+        while(job_queue.empty() && !shutting_down){
             pthread_cond_wait(&available_job_exists, &shared_state_mutex);
         }
 
@@ -471,8 +468,6 @@ void* worker_function(void* arg){
             cerr << "Error unlocking mutex" << endl;
             exit(1);
         }
-
-        cout << "Worker thread picked up JobID " << job_id << endl; // DEBUG
 
         // update worker status and current_job_id
 
@@ -658,8 +653,6 @@ int main(int argc, char* argv[]){
     }
 
     int newsock;
-    
-    cout << "Coord started. Listening on port " << port << "..." << endl; // DEBUG
 
     // create worker threads
     for(int i = 0; i < workers; i++){
@@ -683,8 +676,6 @@ int main(int argc, char* argv[]){
                 break; // if shutting down, exit the loop
             }
         }
-
-        cout << "New client connected!" << endl; // DEBUG
 
         // create new handler thread
 

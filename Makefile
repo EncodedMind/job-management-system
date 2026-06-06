@@ -1,10 +1,10 @@
 CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++11 -g
+CXXFLAGS = -Wall -Wextra -std=c++11 -g -pthread
 
 all: jms_coord jms_console
 
 jms_coord: jms_coord.o protocol.o job_manager.o
-	$(CXX) $(CXXFLAGS) -o jms_coord jms_coord.o protocol.o job_manager.o -lpthread
+	$(CXX) $(CXXFLAGS) -o jms_coord jms_coord.o protocol.o job_manager.o
 
 jms_coord.o: jms_coord.cpp
 	$(CXX) $(CXXFLAGS) -c jms_coord.cpp
