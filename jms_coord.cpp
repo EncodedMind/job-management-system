@@ -414,11 +414,12 @@ void child_function(struct Job &job, const string &path){
     // create directory and files for job outputs
 
     time_t timestamp = time(nullptr);
-    struct tm* timeinfo = localtime(&timestamp);
+    struct tm timeinfo;
+    localtime_r(&timestamp, &timeinfo);
     char date_str[9];
     char time_str[7];
-    strftime(date_str, sizeof(date_str), "%Y%m%d", timeinfo);
-    strftime(time_str, sizeof(time_str), "%H%M%S", timeinfo);
+    strftime(date_str, sizeof(date_str), "%Y%m%d", &timeinfo);
+    strftime(time_str, sizeof(time_str), "%H%M%S", &timeinfo);
     
     string job_path = path + "/outputs_" + to_string(job.JobID) + "_" + to_string(getpid()) + "_" + date_str + "_" + time_str;
                             
