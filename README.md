@@ -22,7 +22,6 @@ The project utilizes separate compilation and modular design. Compile the execut
 
 ```bash
 make
-
 ```
 
 *(Note: The `Makefile` explicitly links the POSIX threads library using the `-pthread` compiler and linker flag).*
@@ -31,7 +30,6 @@ Clean binaries and object files:
 
 ```bash
 make clean
-
 ```
 
 ## Run
@@ -40,7 +38,6 @@ make clean
 
 ```bash
 ./jms_coord -p <port> -l <path> -n <workers>
-
 ```
 
 * `-p <port>`: The TCP port the server will bind to and listen on.
@@ -53,14 +50,12 @@ Interactive mode:
 
 ```bash
 ./jms_console -h <host> -p <port>
-
 ```
 
 Batch mode (read commands from a file, seamlessly transition to standard input upon EOF):
 
 ```bash
 ./jms_console -h <host> -p <port> -o <operations_file>
-
 ```
 
 ---
@@ -125,7 +120,6 @@ For each executed job, the system dynamically generates a timestamped directory 
 
 ```text
 outputs_<JobID>_<PID>_<YYYYMMDD>_<HHMMSS>/
-
 ```
 
 Inside each directory:
@@ -133,7 +127,6 @@ Inside each directory:
 ```text
 stdout_<JobID>
 stderr_<JobID>
-
 ```
 
 The child process utilizes `dup2` to redirect these file descriptors before calling `execvp`, ensuring thread-safe output isolation.
@@ -173,3 +166,4 @@ Furthermore, interactive shell commands (like `vi`, `nano`, or `top`) fail grace
 
 ## Demonstration
 
+[![asciicast](https://asciinema.org/a/UUYacUISv3XwGVak.svg)](https://asciinema.org/a/UUYacUISv3XwGVak)
