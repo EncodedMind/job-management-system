@@ -1,9 +1,4 @@
-# Job Management System (JMS)
-
-#### Ονοματεπώνυμο: ΑΝΔΡΕΑΚΗΣ ΔΗΜΗΤΡΙΟΣ
-#### Αριθμός Μητρώου: 1115202300008
-
----
+# Job Management System (pipes)
 
 ## Overview
 The Job Management System (JMS) is a Unix process orchestration project that executes and tracks shell jobs through a coordinator/pool architecture.

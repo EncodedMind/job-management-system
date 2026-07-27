@@ -1,10 +1,4 @@
-# Job Management System (JMS) - Multi-threaded TCP Coordinator
-
-#### Ονοματεπώνυμο: ΑΝΔΡΕΑΚΗΣ ΔΗΜΗΤΡΙΟΣ
-#### Αριθμός Μητρώου: 1115202300008
-
----
-
+# Job Management System (Multi-threaded)
 ## Overview
 
 The Job Management System (JMS) is a highly concurrent, multi-threaded server architecture that executes and tracks shell jobs.

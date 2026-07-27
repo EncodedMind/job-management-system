@@ -1,0 +1,18 @@
+# Build outputs
+*.o
+pipes/jms_coord
+pipes/jms_console
+multi-threaded/jms_coord
+multi-threaded/jms_console
+
+# Runtime artifacts
+outputs_*/
+pipes/outputs_*/
+multi-threaded/outputs_*/
+jms_in
+jms_out
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
